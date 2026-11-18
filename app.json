@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "CALABARZON Explore",
+    "slug": "calabarzon-virtual-tour",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "ph.calabarzon.virtualtour"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow the app to access your photos to attach destination images."
+        }
+      ]
+    ]
+  }
+}

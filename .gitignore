@@ -1,0 +1,8 @@
+node_modules/
+.expo/
+dist/
+*.log
+
+# Local secrets (API keys). Never commit this file.
+.env
+.env.local
