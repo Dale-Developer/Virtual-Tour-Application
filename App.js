@@ -4,6 +4,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './src/context/AuthContext';
 import { AppSettingsProvider } from './src/context/AppSettingsContext';
 import RootNavigator from './src/navigation/RootNavigator';
+import '@expo/metro-runtime';
 
 export default function App() {
   return (

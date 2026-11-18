@@ -58,8 +58,8 @@ export default function AuthScreen({ route, navigation }) {
         <View style={styles.card}>
           {isRegister ? (
             <View style={styles.nameRow}>
-              <View style={{ flex: 1 }}><Input label="First name" value={firstName} onChangeText={setFirstName} placeholder="Juan" error={errors.firstName} autoCapitalize="words" /></View>
-              <View style={{ flex: 1 }}><Input label="Last name" value={lastName} onChangeText={setLastName} placeholder="Dela Cruz" error={errors.lastName} autoCapitalize="words" /></View>
+              <View style={{ flex: 1 }}><Input label="First name" value={firstName} onChangeText={setFirstName} placeholder="First Name" error={errors.firstName} autoCapitalize="words" /></View>
+              <View style={{ flex: 1 }}><Input label="Last name" value={lastName} onChangeText={setLastName} placeholder="Last Name" error={errors.lastName} autoCapitalize="words" /></View>
             </View>
           ) : null}
           <Input label="Username" value={username} onChangeText={setUsername} placeholder="your.username" autoCapitalize="none" autoCorrect={false} error={errors.username} />

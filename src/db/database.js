@@ -1,44 +1,10 @@
-import * as SQLite from 'expo-sqlite';
-import * as Crypto from 'expo-crypto';
+import { supabase } from '../../lib/supabase'; 
 import { SEED_DESTINATIONS } from './seed';
 import { CATEGORIES, PROVINCES } from '../theme';
 
-/*
- * DATABASE SCHEMA (matches the project's design document)
- *
- *  users            user_id PK, first_name, last_name, username UNIQUE, password_hash,
- *                   role ('Admin' | 'Tourist'), created_at
- *  destinations     destination_id PK, destination_name, description, destination_address,
- *                   category (enum), image, latitude, longitude, panorama_asset,
- *                   created_by FK -> users, created_at, updated_at
- *  quiz_questions   quiz_id PK, destination_id FK, question, options (JSON array),
- *                   correct_answer (index 0-3 into options), explanation
- *  user_progress    progress_id PK, user_id FK, destination_id FK, quiz_score, quiz_total, completed_at
- *
- *  session          small helper table (not part of the design) that remembers who is logged in.
- *  app_settings     small key/value helper table (not part of the design); stores the custom app logo.
- */
-
-let dbPromise = null;
-export const getDB = () => {
-  if (!dbPromise) dbPromise = SQLite.openDatabaseAsync('calabarzon_tour_v2.db');
-  return dbPromise;
-};
-
-export const hashPassword = (pw) =>
-  Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `calabarzon:${pw}`);
-
 export const PASSING_PERCENT = 60;
 
-const parseJSON = (v, fallback) => {
-  try {
-    return v ? JSON.parse(v) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-/** The schema has no province column, so it is read from the end of the address ("…, Calamba City, Laguna"). */
+/** The schema has no province column, so it is read from the end of the address. */
 export function provinceOf(address = '') {
   const parts = address.split(',').map((s) => s.trim().toLowerCase()).reverse();
   for (const part of parts) {
@@ -48,126 +14,93 @@ export function provinceOf(address = '') {
   return null;
 }
 
-/* Column aliases keep the screens simple (id, name, address) while the tables use the design-doc names. */
-const DEST_SELECT = `
-  SELECT destination_id AS id, destination_name AS name, description,
-         destination_address AS address, category, image, latitude, longitude,
-         panorama_asset, created_by, created_at, updated_at
-  FROM destinations`;
+/* ------------------------------------------------------------------ */
+/* Helper Mappers (Ensures your UI stays exactly the same)             */
+/* ------------------------------------------------------------------ */
+const mapDestination = (r) => {
+  if (!r) return null;
+  return {
+    id: r.destination_id,
+    name: r.destination_name,
+    description: r.description,
+    address: r.destination_address,
+    category: r.category,
+    image: r.image,
+    latitude: r.latitude,
+    longitude: r.longitude,
+    panorama_asset: r.panorama_asset,
+    created_by: r.created_by,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    province: provinceOf(r.destination_address)
+  };
+};
 
-const USER_SELECT = `
-  SELECT user_id AS id, first_name, last_name, first_name || ' ' || last_name AS name, username, role
-  FROM users`;
-
-const mapDestination = (r) => (r ? { ...r, province: provinceOf(r.address) } : null);
-const mapQuestion = (r) => (r ? { ...r, options: parseJSON(r.options, []) } : null);
+const mapUser = (r) => {
+  if (!r) return null;
+  return {
+    id: r.user_id,
+    first_name: r.first_name,
+    last_name: r.last_name,
+    name: `${r.first_name} ${r.last_name}`,
+    username: r.username,
+    role: r.role
+  };
+};
 
 /* ------------------------------------------------------------------ */
-/* Setup                                                               */
+/* Setup & Seeding                                                     */
 /* ------------------------------------------------------------------ */
 export async function initDB() {
-  const db = await getDB();
-  const categoryList = CATEGORIES.map((c) => `'${c}'`).join(', ');
-  await db.execAsync(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-
-    CREATE TABLE IF NOT EXISTS users (
-      user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      first_name TEXT NOT NULL,
-      last_name TEXT NOT NULL,
-      username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'Tourist' CHECK (role IN ('Admin', 'Tourist')),
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS destinations (
-      destination_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      destination_name TEXT NOT NULL,
-      description TEXT NOT NULL,
-      destination_address TEXT NOT NULL,
-      category TEXT NOT NULL CHECK (category IN (${categoryList})),
-      image TEXT,
-      latitude REAL,
-      longitude REAL,
-      panorama_asset TEXT,
-      created_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS quiz_questions (
-      quiz_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      destination_id INTEGER NOT NULL REFERENCES destinations(destination_id) ON DELETE CASCADE,
-      question TEXT NOT NULL,
-      options TEXT NOT NULL,
-      correct_answer INTEGER NOT NULL CHECK (correct_answer BETWEEN 0 AND 3),
-      explanation TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS user_progress (
-      progress_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-      destination_id INTEGER NOT NULL REFERENCES destinations(destination_id) ON DELETE CASCADE,
-      quiz_score INTEGER NOT NULL,
-      quiz_total INTEGER NOT NULL CHECK (quiz_total > 0),
-      completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS session (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS app_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-  `);
-
-  let admin = await db.getFirstAsync("SELECT user_id FROM users WHERE role = 'Admin' LIMIT 1");
-  if (!admin) {
-    const pw = await hashPassword('admin123');
-    const res = await db.runAsync(
-      "INSERT INTO users (first_name, last_name, username, password_hash, role) VALUES (?, ?, ?, ?, 'Admin')",
-      ['Site', 'Administrator', 'admin', pw]
-    );
-    admin = { user_id: res.lastInsertRowId };
+  // Supabase handles tables in the cloud. We just need to check if seed data exists.
+  const { count, error } = await supabase
+    .from('destinations')
+    .select('*', { count: 'exact', head: true });
+    
+  if (count === 0 && !error) {
+    // We need an admin ID to attach created_by. 
+    // For testing, we'll just insert without created_by if not logged in.
+    const { data: { user } } = await supabase.auth.getUser();
+    await seedDestinations(user ? user.id : null);
   }
-
-  const count = await db.getFirstAsync('SELECT COUNT(*) AS c FROM destinations');
-  if (count.c === 0) await seedDestinations(admin.user_id);
 }
 
 export async function seedDestinations(createdBy) {
-  const db = await getDB();
-  await db.withTransactionAsync(async () => {
-    for (const d of SEED_DESTINATIONS) {
-      const res = await db.runAsync(
-        `INSERT INTO destinations
-          (destination_name, description, destination_address, category, image, latitude, longitude, panorama_asset, created_by)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-        [d.name, d.description, d.address, d.category, d.image, d.latitude, d.longitude, d.panorama, createdBy]
-      );
+  for (const d of SEED_DESTINATIONS) {
+    const { data: destData, error: destError } = await supabase
+      .from('destinations')
+      .insert([{
+        destination_name: d.name,
+        description: d.description,
+        destination_address: d.address,
+        category: d.category,
+        image: d.image,
+        latitude: d.latitude,
+        longitude: d.longitude,
+        panorama_asset: d.panorama,
+        created_by: createdBy
+      }])
+      .select();
+
+    if (!destError && destData && destData.length > 0) {
+      const newDestId = destData[0].destination_id;
       for (const [question, options, correct, explanation] of d.questions) {
-        await db.runAsync(
-          'INSERT INTO quiz_questions (destination_id, question, options, correct_answer, explanation) VALUES (?,?,?,?,?)',
-          [res.lastInsertRowId, question, JSON.stringify(options), correct, explanation]
-        );
+        await supabase.from('quiz_questions').insert([{
+          destination_id: newDestId,
+          question: question,
+          options: options, // Supabase handles JSON natively
+          correct_answer: correct,
+          explanation: explanation
+        }]);
       }
     }
-  });
+  }
 }
 
-/** Admin tool: wipe destinations, questions and progress, then load the sample data again. */
 export async function resetSampleData(adminId) {
-  const db = await getDB();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('DELETE FROM user_progress');
-    await db.runAsync('DELETE FROM quiz_questions');
-    await db.runAsync('DELETE FROM destinations');
-  });
+  await supabase.from('user_progress').delete().neq('progress_id', 0);
+  await supabase.from('quiz_questions').delete().neq('quiz_id', 0);
+  await supabase.from('destinations').delete().neq('destination_id', 0);
   await seedDestinations(adminId);
 }
 
@@ -175,195 +108,313 @@ export async function resetSampleData(adminId) {
 /* Users / auth                                                        */
 /* ------------------------------------------------------------------ */
 export async function getUserById(id) {
-  const db = await getDB();
-  return db.getFirstAsync(`${USER_SELECT} WHERE user_id = ?`, [id]);
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('user_id', id)
+    .single();
+  if (error) return null;
+  return mapUser(data);
 }
 
+// export async function registerUser({ first_name, last_name, username, password }) {
+//   const cleanUsername = username.trim().toLowerCase();
+  
+//   // Check if username exists
+//   const { data: existing } = await supabase.from('profiles').select('username').eq('username', cleanUsername).single();
+//   if (existing) throw new Error('That username is taken. Please choose another one.');
+
+//   // Use a fake email for Supabase Auth
+//   const fakeEmail = `${cleanUsername}@example.com`;
+
+//   const { data: authData, error: authError } = await supabase.auth.signUp({
+//     email: fakeEmail,
+//     password: password,
+//   });
+
+//   if (authError) throw new Error(authError.message);
+
+//   // Insert into profiles table
+//   const { error: profileError } = await supabase.from('profiles').insert([{
+//     user_id: authData.user.id,
+//     first_name: first_name.trim(),
+//     last_name: last_name.trim(),
+//     username: cleanUsername,
+//     role: 'Tourist'
+//   }]);
+
+//   if (profileError) throw new Error(profileError.message);
+//   return getUserById(authData.user.id);
+// }
 export async function registerUser({ first_name, last_name, username, password }) {
-  const db = await getDB();
-  const exists = await db.getFirstAsync('SELECT user_id FROM users WHERE username = ?', [username.trim()]);
-  if (exists) throw new Error('That username is taken. Please choose another one.');
-  const hash = await hashPassword(password);
-  const res = await db.runAsync(
-    "INSERT INTO users (first_name, last_name, username, password_hash, role) VALUES (?, ?, ?, ?, 'Tourist')",
-    [first_name.trim(), last_name.trim(), username.trim(), hash]
-  );
-  return getUserById(res.lastInsertRowId);
-}
+  const cleanUsername = username.trim().toLowerCase();
+  
+  // Check if username exists in profiles
+  const { data: existing } = await supabase.from('profiles').select('username').eq('username', cleanUsername).single();
+  if (existing) throw new Error('That username is taken. Please choose another one.');
 
+  const fakeEmail = `${cleanUsername}@example.com`;
+
+  const { data: authData, error: authError } = await supabase.auth.signUp({
+    email: fakeEmail,
+    password: password,
+  });
+
+  if (authError) throw new Error(authError.message);
+
+  // SAFETY CHECK: Did Supabase actually return the user?
+  if (!authData.user) {
+    throw new Error("Registration failed. The email/username might already be in use, or email confirmation is still enabled in Supabase.");
+  }
+
+  // Insert into profiles table
+  const { error: profileError } = await supabase.from('profiles').insert([{
+    user_id: authData.user.id,
+    first_name: first_name.trim(),
+    last_name: last_name.trim(),
+    username: cleanUsername,
+    role: 'Tourist'
+  }]);
+
+  if (profileError) {
+    throw new Error(profileError.message);
+  }
+  
+  return getUserById(authData.user.id);
+}
 export async function loginUser(username, password) {
-  const db = await getDB();
-  const hash = await hashPassword(password);
-  const user = await db.getFirstAsync(`${USER_SELECT} WHERE username = ? AND password_hash = ?`, [
-    username.trim(),
-    hash,
-  ]);
-  if (!user) throw new Error('Username or password is incorrect.');
+  const fakeEmail = `${username.trim().toLowerCase()}@example.com`;
+  
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: fakeEmail,
+    password: password,
+  });
+
+  if (error) throw new Error('Username or password is incorrect.');
+  
+  // Fetch user profile
+  const user = await getUserById(data.user.id);
   return user;
 }
 
-export async function saveSession(userId) {
-  const db = await getDB();
-  await db.runAsync('INSERT OR REPLACE INTO session (key, value) VALUES (?, ?)', ['user_id', String(userId)]);
-}
-export async function clearSession() {
-  const db = await getDB();
-  await db.runAsync('DELETE FROM session WHERE key = ?', ['user_id']);
-}
+// Supabase AsyncStorage handles sessions automatically behind the scenes!
+export async function saveSession(userId) { /* Handled by Supabase */ }
+export async function clearSession() { await supabase.auth.signOut(); }
+
 export async function loadSession() {
-  const db = await getDB();
-  const row = await db.getFirstAsync('SELECT value FROM session WHERE key = ?', ['user_id']);
-  return row ? getUserById(Number(row.value)) : null;
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return null;
+  return getUserById(session.user.id);
 }
 
 /* ------------------------------------------------------------------ */
-/* Destinations (CRUD + search/filter)                                 */
+/* Destinations                                                        */
 /* ------------------------------------------------------------------ */
 export async function listDestinations({ search = '', category = 'All', province = 'All' } = {}) {
-  const db = await getDB();
-  const where = [];
-  const args = [];
-  const q = search.trim();
-  if (q) {
-    where.push('(destination_name LIKE ? OR description LIKE ? OR destination_address LIKE ? OR category LIKE ?)');
-    const like = `%${q}%`;
-    args.push(like, like, like, like);
+  let query = supabase.from('destinations').select('*');
+
+  if (search.trim()) {
+    query = query.or(`destination_name.ilike.%${search}%,description.ilike.%${search}%,destination_address.ilike.%${search}%`);
   }
   if (category && category !== 'All') {
-    where.push('category = ?');
-    args.push(category);
+    query = query.eq('category', category);
   }
-  const sql = `${DEST_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY destination_name COLLATE NOCASE`;
-  let rows = (await db.getAllAsync(sql, args)).map(mapDestination);
+
+  const { data, error } = await query.order('destination_name', { ascending: true });
+  if (error) return [];
+
+  let rows = data.map(mapDestination);
   if (province && province !== 'All') rows = rows.filter((r) => r.province === province);
   return rows;
 }
 
 export async function getDestination(id) {
-  const db = await getDB();
-  return mapDestination(await db.getFirstAsync(`${DEST_SELECT} WHERE destination_id = ?`, [id]));
+  const { data } = await supabase.from('destinations').select('*').eq('destination_id', id).single();
+  return mapDestination(data);
 }
 
 export async function getCategories() {
-  const db = await getDB();
-  const rows = await db.getAllAsync('SELECT DISTINCT category FROM destinations ORDER BY category');
-  return rows.map((r) => r.category);
+  const { data } = await supabase.from('destinations').select('category');
+  if (!data) return [];
+  const cats = [...new Set(data.map(r => r.category))];
+  return cats.sort();
 }
 
 const num = (v) => (v === '' || v == null ? null : Number(v));
 
 export async function createDestination(d, createdBy) {
-  const db = await getDB();
-  const res = await db.runAsync(
-    `INSERT INTO destinations
-      (destination_name, description, destination_address, category, image, latitude, longitude, panorama_asset, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-    [
-      d.name.trim(), d.description.trim(), d.address.trim(), d.category,
-      d.image || null, num(d.latitude), num(d.longitude), d.panorama_asset || null, createdBy,
-    ]
-  );
-  return res.lastInsertRowId;
+  const { data, error } = await supabase.from('destinations').insert([{
+    destination_name: d.name.trim(),
+    description: d.description.trim(),
+    destination_address: d.address.trim(),
+    category: d.category,
+    image: d.image || null,
+    latitude: num(d.latitude),
+    longitude: num(d.longitude),
+    panorama_asset: d.panorama_asset || null,
+    created_by: createdBy
+  }]).select();
+
+  if (error) throw new Error(error.message);
+  return data[0].destination_id;
 }
 
 export async function updateDestination(id, d) {
-  const db = await getDB();
-  await db.runAsync(
-    `UPDATE destinations SET destination_name=?, description=?, destination_address=?, category=?, image=?,
-       latitude=?, longitude=?, panorama_asset=?, updated_at=CURRENT_TIMESTAMP
-     WHERE destination_id=?`,
-    [
-      d.name.trim(), d.description.trim(), d.address.trim(), d.category,
-      d.image || null, num(d.latitude), num(d.longitude), d.panorama_asset || null, id,
-    ]
-  );
+  await supabase.from('destinations').update({
+    destination_name: d.name.trim(),
+    description: d.description.trim(),
+    destination_address: d.address.trim(),
+    category: d.category,
+    image: d.image || null,
+    latitude: num(d.latitude),
+    longitude: num(d.longitude),
+    panorama_asset: d.panorama_asset || null,
+    updated_at: new Date().toISOString()
+  }).eq('destination_id', id);
 }
 
 export async function deleteDestination(id) {
-  const db = await getDB();
-  await db.runAsync('DELETE FROM destinations WHERE destination_id = ?', [id]);
+  await supabase.from('destinations').delete().eq('destination_id', id);
 }
 
 /* ------------------------------------------------------------------ */
 /* Quiz questions                                                      */
 /* ------------------------------------------------------------------ */
-const Q_SELECT = `SELECT quiz_id AS id, destination_id, question, options, correct_answer AS answer_index, explanation FROM quiz_questions`;
-
 export async function listQuestions(destinationId) {
-  const db = await getDB();
-  const rows = await db.getAllAsync(`${Q_SELECT} WHERE destination_id = ? ORDER BY quiz_id`, [destinationId]);
-  return rows.map(mapQuestion);
+  const { data } = await supabase.from('quiz_questions')
+    .select('*')
+    .eq('destination_id', destinationId)
+    .order('quiz_id', { ascending: true });
+    
+  if (!data) return [];
+  return data.map(q => ({
+    id: q.quiz_id,
+    destination_id: q.destination_id,
+    question: q.question,
+    options: q.options, // Already an array in Supabase JSONB
+    answer_index: q.correct_answer,
+    explanation: q.explanation
+  }));
 }
 
 export async function getQuestion(id) {
-  const db = await getDB();
-  return mapQuestion(await db.getFirstAsync(`${Q_SELECT} WHERE quiz_id = ?`, [id]));
+  const { data } = await supabase.from('quiz_questions').select('*').eq('quiz_id', id).single();
+  if (!data) return null;
+  return {
+    id: data.quiz_id,
+    destination_id: data.destination_id,
+    question: data.question,
+    options: data.options,
+    answer_index: data.correct_answer,
+    explanation: data.explanation
+  };
 }
 
 export async function createQuestion({ destination_id, question, options, answer_index, explanation }) {
-  const db = await getDB();
-  await db.runAsync(
-    'INSERT INTO quiz_questions (destination_id, question, options, correct_answer, explanation) VALUES (?,?,?,?,?)',
-    [destination_id, question.trim(), JSON.stringify(options.map((o) => o.trim())), answer_index, explanation?.trim() || null]
-  );
+  await supabase.from('quiz_questions').insert([{
+    destination_id,
+    question: question.trim(),
+    options: options.map(o => o.trim()),
+    correct_answer: answer_index,
+    explanation: explanation?.trim() || null
+  }]);
 }
 
 export async function updateQuestion(id, { question, options, answer_index, explanation }) {
-  const db = await getDB();
-  await db.runAsync(
-    'UPDATE quiz_questions SET question=?, options=?, correct_answer=?, explanation=? WHERE quiz_id=?',
-    [question.trim(), JSON.stringify(options.map((o) => o.trim())), answer_index, explanation?.trim() || null, id]
-  );
+  await supabase.from('quiz_questions').update({
+    question: question.trim(),
+    options: options.map(o => o.trim()),
+    correct_answer: answer_index,
+    explanation: explanation?.trim() || null
+  }).eq('quiz_id', id);
 }
 
+// export async function deleteQuestion(id) {
+//   await supabase.from('quiz_questions').delete().eq('quiz_id', id);
+// }
 export async function deleteQuestion(id) {
-  const db = await getDB();
-  await db.runAsync('DELETE FROM quiz_questions WHERE quiz_id = ?', [id]);
+  const { error } = await supabase
+    .from('quiz_questions')
+    .delete()
+    .eq('quiz_id', id);
+
+  if (error) {
+    console.error("Supabase Delete Error:", error);
+    throw new Error(error.message);
+  }
 }
 
 export async function listDestinationsWithQuestionCount() {
-  const db = await getDB();
-  const rows = await db.getAllAsync(`
-    SELECT destination_id AS id, destination_name AS name, destination_address AS address, category, image,
-      (SELECT COUNT(*) FROM quiz_questions q WHERE q.destination_id = d.destination_id) AS question_count
-    FROM destinations d ORDER BY destination_name COLLATE NOCASE
-  `);
-  return rows;
+  const { data } = await supabase.from('destinations').select(`
+    destination_id, destination_name, destination_address, category, image,
+    quiz_questions(count)
+  `).order('destination_name', { ascending: true });
+
+  if (!data) return [];
+
+  return data.map(d => ({
+    id: d.destination_id,
+    name: d.destination_name,
+    address: d.destination_address,
+    category: d.category,
+    image: d.image,
+    question_count: d.quiz_questions[0]?.count || 0
+  }));
 }
 
 /* ------------------------------------------------------------------ */
-/* Progress tracking (user_progress)                                   */
+/* Progress tracking                                                   */
 /* ------------------------------------------------------------------ */
-/** Every submitted quiz is recorded as a row, so score history is kept. */
 export async function saveQuizResult({ userId, destinationId, score, total }) {
-  const db = await getDB();
-  await db.runAsync(
-    'INSERT INTO user_progress (user_id, destination_id, quiz_score, quiz_total) VALUES (?,?,?,?)',
-    [userId, destinationId, score, total]
-  );
+  await supabase.from('user_progress').insert([{
+    user_id: userId,
+    destination_id: destinationId,
+    quiz_score: score,
+    quiz_total: total
+  }]);
 }
 
-/** Per-destination summary for one user. A destination is "completed" once the best
- *  quiz score reaches PASSING_PERCENT. */
 export async function getProgress(userId) {
-  const db = await getDB();
-  const best = (col) => `(SELECT p.${col} FROM user_progress p WHERE p.user_id = ? AND p.destination_id = d.destination_id
-      ORDER BY CAST(p.quiz_score AS REAL) / p.quiz_total DESC, p.progress_id DESC LIMIT 1)`;
-  const rows = await db.getAllAsync(
-    `SELECT d.destination_id AS id, d.destination_name AS name, d.image, d.category, d.destination_address AS address,
-        (SELECT COUNT(*) FROM quiz_questions q WHERE q.destination_id = d.destination_id) AS question_count,
-        (SELECT MAX(CAST(p.quiz_score AS REAL) / p.quiz_total) FROM user_progress p
-           WHERE p.user_id = ? AND p.destination_id = d.destination_id) AS best_ratio,
-        ${best('quiz_score')} AS best_score,
-        ${best('quiz_total')} AS best_total,
-        (SELECT COUNT(*) FROM user_progress p WHERE p.user_id = ? AND p.destination_id = d.destination_id) AS attempts
-     FROM destinations d ORDER BY d.destination_name COLLATE NOCASE`,
-    [userId, userId, userId, userId]
-  );
-  return rows.map((r) => {
-    const completed = r.best_ratio != null && r.best_ratio * 100 >= PASSING_PERCENT;
-    return { ...r, passed: completed, completed };
-  });
+  // Get all destinations and all user progress
+  const { data: dests } = await supabase.from('destinations').select('*, quiz_questions(count)');
+  const { data: progress } = await supabase.from('user_progress').select('*').eq('user_id', userId);
+
+  if (!dests) return [];
+
+  return dests.map(d => {
+    const destProgress = progress?.filter(p => p.destination_id === d.destination_id) || [];
+    
+    // Find best score
+    let bestRatio = null;
+    let bestScore = null;
+    let bestTotal = null;
+
+    destProgress.forEach(p => {
+      const ratio = p.quiz_score / p.quiz_total;
+      if (bestRatio === null || ratio > bestRatio) {
+        bestRatio = ratio;
+        bestScore = p.quiz_score;
+        bestTotal = p.quiz_total;
+      }
+    });
+
+    const completed = bestRatio !== null && (bestRatio * 100) >= PASSING_PERCENT;
+
+    return {
+      id: d.destination_id,
+      name: d.destination_name,
+      image: d.image,
+      category: d.category,
+      address: d.destination_address,
+      question_count: d.quiz_questions[0]?.count || 0,
+      best_ratio: bestRatio,
+      best_score: bestScore,
+      best_total: bestTotal,
+      attempts: destProgress.length,
+      passed: completed,
+      completed: completed
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getProgressFor(userId, destinationId) {
@@ -372,108 +423,160 @@ export async function getProgressFor(userId, destinationId) {
 }
 
 export async function getRecentResults(userId, limit = 8) {
-  const db = await getDB();
-  return db.getAllAsync(
-    `SELECT p.progress_id AS id, p.quiz_score AS score, p.quiz_total AS total, p.completed_at,
-            d.destination_name AS destination_name
-     FROM user_progress p JOIN destinations d ON d.destination_id = p.destination_id
-     WHERE p.user_id = ? ORDER BY p.progress_id DESC LIMIT ?`,
-    [userId, limit]
-  );
+  const { data } = await supabase.from('user_progress')
+    .select(`
+      progress_id, quiz_score, quiz_total, completed_at,
+      destinations(destination_name)
+    `)
+    .eq('user_id', userId)
+    .order('progress_id', { ascending: false })
+    .limit(limit);
+
+  if (!data) return [];
+
+  return data.map(p => ({
+    id: p.progress_id,
+    score: p.quiz_score,
+    total: p.quiz_total,
+    completed_at: p.completed_at,
+    destination_name: p.destinations.destination_name
+  }));
 }
 
 /* ------------------------------------------------------------------ */
 /* Admin reporting                                                     */
 /* ------------------------------------------------------------------ */
 export async function getAdminStats() {
-  const db = await getDB();
-  const one = async (sql) => (await db.getFirstAsync(sql)).c;
-  const avg = await db.getFirstAsync('SELECT AVG(CAST(quiz_score AS REAL) / quiz_total) AS a FROM user_progress');
+  const { count: dests } = await supabase.from('destinations').select('*', { count: 'exact', head: true });
+  const { count: quizzes } = await supabase.from('quiz_questions').select('*', { count: 'exact', head: true });
+  const { count: tourists } = await supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'Tourist');
+  const { data: progress } = await supabase.from('user_progress').select('quiz_score, quiz_total, user_id, destination_id');
+
+  let avgPercent = null;
+  let completed = 0;
+
+  if (progress && progress.length > 0) {
+    const totalRatio = progress.reduce((acc, curr) => acc + (curr.quiz_score / curr.quiz_total), 0);
+    avgPercent = Math.round((totalRatio / progress.length) * 100);
+
+    // Count completed
+    const grouped = {};
+    progress.forEach(p => {
+      const key = `${p.user_id}-${p.destination_id}`;
+      const ratio = p.quiz_score / p.quiz_total;
+      if (!grouped[key] || ratio > grouped[key]) grouped[key] = ratio;
+    });
+    completed = Object.values(grouped).filter(r => r >= (PASSING_PERCENT / 100)).length;
+  }
+
   return {
-    destinations: await one('SELECT COUNT(*) AS c FROM destinations'),
-    questions: await one('SELECT COUNT(*) AS c FROM quiz_questions'),
-    tourists: await one("SELECT COUNT(*) AS c FROM users WHERE role = 'Tourist'"),
-    attempts: await one('SELECT COUNT(*) AS c FROM user_progress'),
-    completed: await one(`SELECT COUNT(*) AS c FROM (
-      SELECT user_id, destination_id FROM user_progress GROUP BY user_id, destination_id
-      HAVING MAX(CAST(quiz_score AS REAL) / quiz_total) >= ${PASSING_PERCENT / 100})`),
-    avgPercent: avg.a == null ? null : Math.round(avg.a * 100),
+    destinations: dests || 0,
+    questions: quizzes || 0,
+    tourists: tourists || 0,
+    attempts: progress?.length || 0,
+    completed: completed,
+    avgPercent: avgPercent
   };
 }
 
 export async function getPopularDestinations(limit = 5) {
-  const db = await getDB();
-  return db.getAllAsync(
-    `SELECT d.destination_id AS id, d.destination_name AS name,
-        (SELECT COUNT(*) FROM user_progress p WHERE p.destination_id = d.destination_id) AS attempts
-     FROM destinations d ORDER BY attempts DESC, d.destination_name LIMIT ?`,
-    [limit]
-  );
+  const { data: dests } = await supabase.from('destinations').select('destination_id, destination_name');
+  const { data: progress } = await supabase.from('user_progress').select('destination_id');
+
+  if (!dests) return [];
+
+  const counts = {};
+  progress?.forEach(p => {
+    counts[p.destination_id] = (counts[p.destination_id] || 0) + 1;
+  });
+
+  return dests.map(d => ({
+    id: d.destination_id,
+    name: d.destination_name,
+    attempts: counts[d.destination_id] || 0
+  })).sort((a, b) => b.attempts - a.attempts).slice(0, limit);
 }
 
 export async function listTourists() {
-  const db = await getDB();
-  return db.getAllAsync(`
-    SELECT u.user_id AS id, u.first_name || ' ' || u.last_name AS name, u.username, u.created_at,
-      (SELECT COUNT(*) FROM (
-         SELECT p.destination_id FROM user_progress p WHERE p.user_id = u.user_id
-         GROUP BY p.destination_id
-         HAVING MAX(CAST(p.quiz_score AS REAL) / p.quiz_total) >= ${PASSING_PERCENT / 100})) AS completed,
-      (SELECT COUNT(*) FROM user_progress p WHERE p.user_id = u.user_id) AS attempts,
-      (SELECT AVG(CAST(p.quiz_score AS REAL) / p.quiz_total) FROM user_progress p WHERE p.user_id = u.user_id) AS avg_ratio
-    FROM users u WHERE u.role = 'Tourist' ORDER BY u.created_at DESC
-  `);
+  const { data: users } = await supabase.from('profiles').select('*').eq('role', 'Tourist').order('created_at', { ascending: false });
+  const { data: progress } = await supabase.from('user_progress').select('*');
+
+  if (!users) return [];
+
+  return users.map(u => {
+    const userProgress = progress?.filter(p => p.user_id === u.user_id) || [];
+    
+    // Calculate avg ratio
+    let avgRatio = null;
+    if (userProgress.length > 0) {
+      avgRatio = userProgress.reduce((acc, p) => acc + (p.quiz_score / p.quiz_total), 0) / userProgress.length;
+    }
+
+    // Calculate completed
+    const grouped = {};
+    userProgress.forEach(p => {
+      const ratio = p.quiz_score / p.quiz_total;
+      if (!grouped[p.destination_id] || ratio > grouped[p.destination_id]) grouped[p.destination_id] = ratio;
+    });
+    const completed = Object.values(grouped).filter(r => r >= (PASSING_PERCENT / 100)).length;
+
+    return {
+      id: u.user_id,
+      name: `${u.first_name} ${u.last_name}`,
+      username: u.username,
+      created_at: u.created_at,
+      attempts: userProgress.length,
+      completed: completed,
+      avg_ratio: avgRatio
+    };
+  });
 }
 
 export async function deleteUser(id) {
-  const db = await getDB();
-  await db.runAsync("DELETE FROM users WHERE user_id = ? AND role = 'Tourist'", [id]);
+  // Note: Deleting from auth requires admin privileges. 
+  // For a class project, deleting the profile is usually enough to hide them.
+  await supabase.from('profiles').delete().eq('user_id', id).eq('role', 'Tourist');
 }
 
 /* ------------------------------------------------------------------ */
 /* Account settings                                                    */
 /* ------------------------------------------------------------------ */
 export async function updateProfile(userId, { first_name, last_name, username }) {
-  const db = await getDB();
-  const clash = await db.getFirstAsync(
-    'SELECT user_id FROM users WHERE username = ? AND user_id != ?',
-    [username.trim(), userId]
-  );
+  const cleanUsername = username.trim().toLowerCase();
+  
+  const { data: clash } = await supabase.from('profiles').select('user_id').eq('username', cleanUsername).neq('user_id', userId).single();
   if (clash) throw new Error('That username is taken. Please choose another one.');
-  await db.runAsync('UPDATE users SET first_name = ?, last_name = ?, username = ? WHERE user_id = ?', [
-    first_name.trim(), last_name.trim(), username.trim(), userId,
-  ]);
+
+  await supabase.from('profiles').update({
+    first_name: first_name.trim(),
+    last_name: last_name.trim(),
+    username: cleanUsername
+  }).eq('user_id', userId);
 }
 
 export async function changePassword(userId, currentPassword, newPassword) {
-  const db = await getDB();
-  const ok = await db.getFirstAsync('SELECT user_id FROM users WHERE user_id = ? AND password_hash = ?', [
-    userId,
-    await hashPassword(currentPassword),
-  ]);
-  if (!ok) throw new Error('Your current password is incorrect.');
-  await db.runAsync('UPDATE users SET password_hash = ? WHERE user_id = ?', [await hashPassword(newPassword), userId]);
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw new Error('Could not update password. Please try again.');
 }
 
-/** Tourists can delete their own account (their quiz progress goes with it). */
 export async function deleteAccount(userId) {
-  const db = await getDB();
-  await db.runAsync("DELETE FROM users WHERE user_id = ? AND role = 'Tourist'", [userId]);
+  await supabase.from('profiles').delete().eq('user_id', userId);
+  await supabase.auth.signOut();
 }
 
 /* ------------------------------------------------------------------ */
 /* App settings (custom logo)                                          */
 /* ------------------------------------------------------------------ */
 export async function getSetting(key) {
-  const db = await getDB();
-  const row = await db.getFirstAsync('SELECT value FROM app_settings WHERE key = ?', [key]);
-  return row ? row.value : null;
+  const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
+  return data ? data.value : null;
 }
+
 export async function setSetting(key, value) {
-  const db = await getDB();
-  await db.runAsync('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [key, value]);
+  // Upsert means: Insert if it doesn't exist, Update if it does
+  await supabase.from('app_settings').upsert({ key: key, value: value });
 }
+
 export async function deleteSetting(key) {
-  const db = await getDB();
-  await db.runAsync('DELETE FROM app_settings WHERE key = ?', [key]);
+  await supabase.from('app_settings').delete().eq('key', key);
 }
