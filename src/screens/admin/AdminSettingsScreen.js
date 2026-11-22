@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { useAuth } from '../../context/AuthContext';
@@ -26,25 +27,25 @@ export default function AdminSettingsScreen() {
 
   const pickLogo = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert('Permission needed', 'Allow photo access to choose a logo, or paste an image URL instead.');
+    if (!perm.granted) return showAlert('Permission needed', 'Allow photo access to choose a logo, or paste an image URL instead.');
     // No cropping, so a transparent PNG logo keeps its transparency.
     const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 0.8, base64: true });
     if (res.canceled || !res.assets?.[0]?.base64) return;
     const a = res.assets[0];
     if (a.base64.length > 2_500_000) {
-      return Alert.alert('Image is too large', 'Choose a logo smaller than about 1.5 MB.');
+      return showAlert('Image is too large', 'Choose a logo smaller than about 1.5 MB.');
     }
     setBusy(true);
     await setLogo(`data:${a.mimeType || 'image/png'};base64,${a.base64}`);
     setBusy(false);
-    Alert.alert('Logo updated', 'The new logo now shows across the app.');
+    showAlert('Logo updated', 'The new logo now shows across the app.');
   };
 
   const useUrl = async () => {
-    if (!/^https?:\/\/\S+$/i.test(url.trim())) return Alert.alert('Invalid URL', 'Paste a direct image link that starts with https://');
+    if (!/^https?:\/\/\S+$/i.test(url.trim())) return showAlert('Invalid URL', 'Paste a direct image link that starts with https://');
     await setLogo(url.trim());
     setUrl('');
-    Alert.alert('Logo updated', 'If the logo looks blank, the link may not point straight to an image file.');
+    showAlert('Logo updated', 'If the logo looks blank, the link may not point straight to an image file.');
   };
 
   // ----- welcome screen image -----
@@ -52,7 +53,7 @@ export default function AdminSettingsScreen() {
   // center-crop to 9:16, then resize to exactly 1080 x 1920.
   const pickStartImage = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert('Permission needed', 'Allow photo access to choose a picture, or paste an image URL instead.');
+    if (!perm.granted) return showAlert('Permission needed', 'Allow photo access to choose a picture, or paste an image URL instead.');
     const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1 });
     if (res.canceled || !res.assets?.[0]?.uri) return;
 
@@ -70,41 +71,41 @@ export default function AdminSettingsScreen() {
       const ref = await ImageManipulator.manipulate(original).crop(rect).resize({ width: START_W, height: START_H }).renderAsync();
       const out = await ref.saveAsync({ format: SaveFormat.JPEG, compress: 0.75, base64: true });
       await setStartImage(`data:image/jpeg;base64,${out.base64}`);
-      Alert.alert('Welcome image updated', `Saved as ${START_W} x ${START_H}. Log out to see it on the welcome screen.`);
+      showAlert('Welcome image updated', `Saved as ${START_W} x ${START_H}. Log out to see it on the welcome screen.`);
     } catch (e) {
-      Alert.alert('Could not use that picture', e.message);
+      showAlert('Could not use that picture', e.message);
     }
     setStartBusy(false);
   };
 
   const useStartUrl = async () => {
-    if (!/^https?:\/\/\S+$/i.test(startUrl.trim())) return Alert.alert('Invalid URL', 'Paste a direct image link that starts with https://');
+    if (!/^https?:\/\/\S+$/i.test(startUrl.trim())) return showAlert('Invalid URL', 'Paste a direct image link that starts with https://');
     await setStartImage(startUrl.trim());
     setStartUrl('');
-    Alert.alert('Welcome image updated', 'If the picture looks blank, the link may not point straight to an image file.');
+    showAlert('Welcome image updated', 'If the picture looks blank, the link may not point straight to an image file.');
   };
 
   const confirmResetStart = () =>
-    Alert.alert('Reset the welcome image?', undefined, [
+    showAlert('Reset the welcome image?', undefined, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Reset', onPress: resetStartImage },
     ]);
 
   const confirmReset = () =>
-    Alert.alert('Reset to the default logo?', undefined, [
+    showAlert('Reset to the default logo?', undefined, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Reset', onPress: resetLogo },
     ]);
 
   const resetData = () =>
-    Alert.alert(
-      'Reset to sample data?',
-      'All destinations, quiz questions, quiz scores will be replaced with the built-in samples. Tourist accounts are kept.',
+    showAlert(
+      'Load the sample data?',
+      'All destinations, quiz questions and quiz scores (for every tourist) will be replaced with the built-in samples. Tourist accounts are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Reset', style: 'destructive',
-          onPress: async () => { await resetSampleData(user.id); Alert.alert('Done', 'Sample data restored.'); },
+          onPress: async () => { await resetSampleData(user.id); showAlert('Done', 'Sample data restored.'); },
         },
       ]
     );
@@ -143,8 +144,8 @@ export default function AdminSettingsScreen() {
           <PasswordForm color={c.primary} />
         </SectionCard>
 
-        <SectionCard title="Sample data" subtitle="Restore the built-in CALABARZON destinations and quizzes if the demo data gets messy.">
-          <Button title="Reset to sample data" icon="refresh" variant="outline" color={c.danger} onPress={resetData} />
+        <SectionCard title="Sample data" subtitle="Load the built-in CALABARZON destinations and quizzes. Use this the first time, or to restore them if the data gets messy. It replaces all destinations, questions and quiz scores for everyone.">
+          <Button title="Load sample data" icon="refresh" variant="outline" color={c.danger} onPress={resetData} />
         </SectionCard>
 
         <Button title="Log out" icon="log-out-outline" variant="outline" onPress={logout} />

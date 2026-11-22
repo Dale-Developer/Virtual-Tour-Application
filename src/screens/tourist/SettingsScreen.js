@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { deleteAccount } from '../../db/database';
@@ -12,13 +13,13 @@ export default function SettingsScreen() {
   const { user, logout } = useAuth();
 
   const confirmLogout = () =>
-    Alert.alert('Log out?', 'Your progress stays saved on this device.', [
+    showAlert('Log out?', 'Your progress stays saved on this device.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Log out', onPress: logout },
     ]);
 
   const confirmDelete = () =>
-    Alert.alert(
+    showAlert(
       'Delete your account?',
       'Your account, quiz scores and completed destinations will be permanently removed. This cannot be undone.',
       [

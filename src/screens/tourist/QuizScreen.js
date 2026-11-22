@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
@@ -28,11 +29,15 @@ export default function QuizScreen({ route, navigation }) {
 
   const submit = async () => {
     if (answeredCount < questions.length) {
-      return Alert.alert('Answer every question', `You have answered ${answeredCount} of ${questions.length}.`);
+      return showAlert('Answer every question', `You have answered ${answeredCount} of ${questions.length}.`);
     }
     // Score is calculated automatically by comparing each choice to the stored answer.
     const score = questions.filter((q) => answers[q.id] === q.answer_index).length;
-    await saveQuizResult({ userId: user.id, destinationId: dest.id, score, total: questions.length });
+    try {
+      await saveQuizResult({ userId: user.id, destinationId: dest.id, score, total: questions.length });
+    } catch (e) {
+      return showAlert('Your score was not saved', e.message);
+    }
     setResult({ score, total: questions.length });
   };
 

@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Linking, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,12 +31,12 @@ export default function DestinationDetailScreen({ route, navigation }) {
   if (!dest) return <View style={{ flex: 1, backgroundColor: palette.bg }} />;
 
   const openMap = () => {
-    if (dest.latitude == null) return Alert.alert('No coordinates', 'This destination has no map location yet.');
+    if (dest.latitude == null) return showAlert('No coordinates', 'This destination has no map location yet.');
     Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${dest.latitude},${dest.longitude}`);
   };
 
   const confirmDelete = () =>
-    Alert.alert('Delete destination?', `"${dest.name}", its quiz questions and all progress records will be removed.`, [
+    showAlert('Delete destination?', `"${dest.name}", its quiz questions and all progress records will be removed.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',

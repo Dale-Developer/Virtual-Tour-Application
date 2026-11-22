@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { listDestinations, getCategories, deleteDestination } from '../../db/database';
@@ -25,7 +26,7 @@ export default function AdminDestinationsScreen({ navigation }) {
   useEffect(() => { load(); }, [search, category]);
 
   const remove = (d) =>
-    Alert.alert('Delete destination?', `"${d.name}", its quiz questions and tourist progress for it will be removed.`, [
+    showAlert('Delete destination?', `"${d.name}", its quiz questions and tourist progress for it will be removed.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => { await deleteDestination(d.id); load(); } },
     ]);

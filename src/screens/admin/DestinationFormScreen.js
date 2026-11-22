@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
@@ -20,7 +21,7 @@ const empty = {
 function ImageField({ label, value, onChange, aspect, hint, height = 170 }) {
   const pick = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return Alert.alert('Permission needed', 'Allow photo access to pick an image, or paste an image URL instead.');
+    if (!perm.granted) return showAlert('Permission needed', 'Allow photo access to pick an image, or paste an image URL instead.');
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'], allowsEditing: true, aspect, quality: 0.5, base64: true,
     });
@@ -76,14 +77,14 @@ export default function DestinationFormScreen({ route, navigation }) {
   };
 
   const save = async () => {
-    if (!validate()) return Alert.alert('Check the form', 'Some fields need your attention.');
+    if (!validate()) return showAlert('Check the form', 'Some fields need your attention.');
     setSaving(true);
     try {
       if (id) await updateDestination(id, form);
       else await createDestination(form, user.id);
       navigation.goBack();
     } catch (err) {
-      Alert.alert('Could not save', err.message);
+      showAlert('Could not save', err.message);
       setSaving(false);
     }
   };

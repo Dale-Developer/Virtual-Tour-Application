@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
+import { showAlert } from '../lib/dialog';
 import { useAuth } from '../context/AuthContext';
 import { updateProfile, changePassword } from '../db/database';
 import Input from './Input';
@@ -28,7 +29,7 @@ export function ProfileForm({ color = colors.primary }) {
     try {
       await updateProfile(user.id, { first_name: first, last_name: last, username });
       await refreshUser();
-      Alert.alert('Saved', 'Your account details were updated.');
+      showAlert('Saved', 'Your account details were updated.');
     } catch (err) {
       setErrors({ username: err.message });
     }
@@ -68,7 +69,7 @@ export function PasswordForm({ color = colors.primary }) {
     try {
       await changePassword(user.id, current, next);
       setCurrent(''); setNext(''); setConfirm('');
-      Alert.alert('Password changed', 'Use your new password the next time you log in.');
+      showAlert('Password changed', 'Use your new password the next time you log in.');
     } catch (err) {
       setErrors({ current: err.message });
     }

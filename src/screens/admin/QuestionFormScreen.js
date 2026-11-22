@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getQuestion, createQuestion, updateQuestion } from '../../db/database';
 import AdminHeader from '../../components/AdminHeader';
@@ -30,15 +31,15 @@ export default function QuestionFormScreen({ route, navigation }) {
   const setOption = (i) => (v) => setOptions((o) => o.map((x, idx) => (idx === i ? v : x)));
 
   const save = async () => {
-    if (!question.trim()) return Alert.alert('Question is empty', 'Type the question first.');
-    if (options.some((o) => !o.trim())) return Alert.alert('Fill every choice', 'Each multiple-choice question needs four answer choices.');
+    if (!question.trim()) return showAlert('Question is empty', 'Type the question first.');
+    if (options.some((o) => !o.trim())) return showAlert('Fill every choice', 'Each multiple-choice question needs four answer choices.');
     setSaving(true);
     try {
       if (id) await updateQuestion(id, { question, options, answer_index: answer, explanation });
       else await createQuestion({ destination_id: destinationId, question, options, answer_index: answer, explanation });
       navigation.goBack();
     } catch (e) {
-      Alert.alert('Could not save', e.message);
+      showAlert('Could not save', e.message);
       setSaving(false);
     }
   };

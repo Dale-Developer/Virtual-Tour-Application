@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
+import { showAlert } from '../../lib/dialog';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { listTourists, deleteUser } from '../../db/database';
@@ -13,7 +14,7 @@ export default function AdminUsersScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const remove = (u) =>
-    Alert.alert('Remove tourist?', `${u.name}'s account and quiz progress will be deleted.`, [
+    showAlert('Remove tourist?', `${u.name}'s account and quiz progress will be deleted.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Remove', style: 'destructive', onPress: async () => { await deleteUser(u.id); load(); } },
     ]);
