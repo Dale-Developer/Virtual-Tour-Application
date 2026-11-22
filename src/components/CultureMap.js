@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { View, Text, ActivityIndicator, StyleSheet, Platform, TouchableOpacity } from 'react-native';
+
+// react-native-webview does not work on the web, so it is only loaded on phones.
+// On the website the same map page runs inside an <iframe>.
+const WebView = Platform.OS === 'web' ? null : require('react-native-webview').WebView;
 import { colors, radius } from '../theme';
 
 /*
@@ -45,6 +48,9 @@ function buildHtml(markers) {
 <div id="map"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
+  if (!window.ReactNativeWebView) {
+    window.ReactNativeWebView = { postMessage: function (m) { window.parent.postMessage(m, '*'); } };
+  }
   function post(o) { window.ReactNativeWebView.postMessage(JSON.stringify(o)); }
   if (typeof L === 'undefined') {
     document.body.innerHTML = '<div class="msg"><b>The map could not load.</b><br>Check your internet connection and reopen this tab.</div>';
@@ -114,10 +120,12 @@ function buildHtml(markers) {
 }
 
 export default function CultureMap({ items, selectedId, onSelect, height = 250 }) {
-  const ref = useRef(null);
+  const ref = useRef(null); // the WebView (phones) or the iframe (web)
   const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
+  const [failedMsg, setFailedMsg] = useState('');
   const [provider, setProvider] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const isWeb = Platform.OS === 'web';
 
   const markers = useMemo(
     () =>
@@ -130,17 +138,31 @@ export default function CultureMap({ items, selectedId, onSelect, height = 250 }
   const key = JSON.stringify(markers);
   const html = useMemo(() => buildHtml(markers), [key]);
 
-  const highlight = () =>
-    ref.current?.injectJavaScript(
-      `window.selectMarker && window.selectMarker(${selectedId == null ? 'null' : Number(selectedId)}); true;`
-    );
+  const highlight = () => {
+    const id = selectedId == null ? null : Number(selectedId);
+    if (isWeb) {
+      try { ref.current?.contentWindow?.selectMarker?.(id); } catch {}
+    } else {
+      ref.current?.injectJavaScript(`window.selectMarker && window.selectMarker(${id}); true;`);
+    }
+  };
 
-  useEffect(highlight, [selectedId]);
-  useEffect(() => { setLoading(true); setFailed(false); }, [key]);
+  useEffect(() => { highlight(); }, [selectedId]);
+  useEffect(() => { setLoading(true); setFailedMsg(''); }, [key, attempt]);
 
-  const onMessage = (e) => {
+  // Never spin forever: after 12 seconds show a message and a Try again button.
+  useEffect(() => {
+    if (!loading) return undefined;
+    const t = setTimeout(() => {
+      setLoading(false);
+      setFailedMsg('The map is taking too long to load. Check your internet connection.');
+    }, 12000);
+    return () => clearTimeout(t);
+  }, [loading, key, attempt]);
+
+  const handleMessage = (raw) => {
     try {
-      const msg = JSON.parse(e.nativeEvent.data);
+      const msg = JSON.parse(raw);
       if (msg.type === 'select') {
         const d = items.find((x) => x.id === msg.id);
         if (d) onSelect?.(d);
@@ -149,41 +171,66 @@ export default function CultureMap({ items, selectedId, onSelect, height = 250 }
         if (msg.reason) console.warn('[map] using fallback tiles:', msg.reason);
       } else if (msg.type === 'ready') {
         setLoading(false);
+        setFailedMsg('');
         highlight();
       } else if (msg.type === 'error') {
         setLoading(false);
-        setFailed(true);
+        setFailedMsg('The map needs an internet connection.');
       }
     } catch {}
   };
 
+  // Website only: messages from the iframe arrive as window messages.
+  useEffect(() => {
+    if (!isWeb) return undefined;
+    const onWindowMessage = (e) => {
+      if (e.source === ref.current?.contentWindow && typeof e.data === 'string') handleMessage(e.data);
+    };
+    window.addEventListener('message', onWindowMessage);
+    return () => window.removeEventListener('message', onWindowMessage);
+  });
+
   return (
     <View style={[styles.wrap, { height }]}>
-      <WebView
-        ref={ref}
-        originWhitelist={['*']}
-        source={{ html, baseUrl: 'https://localhost/' }}
-        onMessage={onMessage}
-        onError={() => { setLoading(false); setFailed(true); }}
-        javaScriptEnabled
-        domStorageEnabled
-        scrollEnabled={false}
-        nestedScrollEnabled
-        setSupportMultipleWindows={false}
-        style={{ backgroundColor: '#BFD7F5' }}
-      />
+      {isWeb ? (
+        React.createElement('iframe', {
+          key: `web-${attempt}`,
+          ref,
+          srcDoc: html,
+          title: 'Destination map',
+          style: { border: 0, width: '100%', height: '100%', display: 'block', background: '#BFD7F5' },
+        })
+      ) : (
+        <WebView
+          key={`native-${attempt}`}
+          ref={ref}
+          originWhitelist={['*']}
+          source={{ html, baseUrl: 'https://localhost/' }}
+          onMessage={(e) => handleMessage(e.nativeEvent.data)}
+          onError={() => { setLoading(false); setFailedMsg('The map needs an internet connection.'); }}
+          javaScriptEnabled
+          domStorageEnabled
+          scrollEnabled={false}
+          nestedScrollEnabled
+          setSupportMultipleWindows={false}
+          style={{ backgroundColor: '#BFD7F5' }}
+        />
+      )}
       {__DEV__ && provider ? (
         <View style={styles.badge} pointerEvents="none"><Text style={styles.badgeText}>Tiles: {provider}</Text></View>
       ) : null}
-      {loading && !failed && (
+      {loading && (
         <View style={styles.overlay} pointerEvents="none">
           <ActivityIndicator color={colors.primary} />
           <Text style={styles.overlayText}>Loading map…</Text>
         </View>
       )}
-      {failed && (
+      {!!failedMsg && (
         <View style={styles.overlay}>
-          <Text style={styles.overlayText}>The map needs an internet connection.</Text>
+          <Text style={[styles.overlayText, { textAlign: 'center', paddingHorizontal: 24 }]}>{failedMsg}</Text>
+          <TouchableOpacity style={styles.retry} onPress={() => setAttempt((a) => a + 1)} accessibilityRole="button">
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
         </View>
       )}
     </View>
@@ -198,5 +245,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, borderColor: '#D7E6E7',
   },
   overlay: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: '#EEF3F4', gap: 8 },
+  retry: { marginTop: 4, backgroundColor: colors.accent, borderRadius: 999, paddingHorizontal: 18, paddingVertical: 9 },
+  retryText: { color: '#fff', fontWeight: '800', fontSize: 13 },
   overlayText: { color: colors.muted, fontWeight: '600', fontSize: 13 },
 });
