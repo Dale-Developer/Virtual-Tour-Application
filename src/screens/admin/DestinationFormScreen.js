@@ -4,7 +4,7 @@ import { showAlert } from '../../lib/dialog';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
-import { getDestination, createDestination, updateDestination } from '../../db/database';
+import { getDestination, createDestination, updateDestination, uploadImageToStorage } from '../../db/database';
 import AdminHeader from '../../components/AdminHeader';
 import Input from '../../components/Input';
 import Chips from '../../components/Chips';
@@ -17,23 +17,45 @@ const empty = {
   image: '', panorama_asset: '', latitude: '', longitude: '',
 };
 
-/** Reusable "pick from gallery or paste URL" block for the image and panorama fields. */
 function ImageField({ label, value, onChange, aspect, hint, height = 170 }) {
+  const [uploading, setUploading] = useState(false);
+
   const pick = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) return showAlert('Permission needed', 'Allow photo access to pick an image, or paste an image URL instead.');
+    
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'], allowsEditing: true, aspect, quality: 0.5, base64: true,
     });
-    if (!res.canceled && res.assets?.[0]?.base64) onChange(`data:image/jpeg;base64,${res.assets[0].base64}`);
+
+    if (!res.canceled && res.assets?.[0]?.base64) {
+      try {
+        setUploading(true);
+        const asset = res.assets[0];
+        const publicUrl = await uploadImageToStorage(asset.base64, asset.mimeType);
+        onChange(publicUrl);
+      } catch (err) {
+        showAlert('Upload failed', err.message || 'Could not upload image.');
+      } finally {
+        setUploading(false);
+      }
+    }
   };
+
   return (
     <View style={{ marginBottom: 6 }}>
       <Text style={styles.label}>{label}</Text>
       {hint ? <Text style={styles.hint}>{hint}</Text> : null}
       <SafeImage uri={value} style={{ height, borderRadius: radius.md }} />
       <View style={{ flexDirection: 'row', gap: 10, marginVertical: 10 }}>
-        <Button title="Pick from gallery" icon="images-outline" onPress={pick} style={{ flex: 1, paddingHorizontal: 8 }} />
+        <Button 
+          title={uploading ? "Uploading..." : "Pick from gallery"} 
+          icon="images-outline" 
+          onPress={pick} 
+          loading={uploading} 
+          disabled={uploading} 
+          style={{ flex: 1, paddingHorizontal: 8 }} 
+        />
         {value ? <Button title="Remove" variant="outline" color={c.danger} onPress={() => onChange('')} style={{ paddingHorizontal: 16 }} /> : null}
       </View>
       <Input value={value.startsWith('data:') ? '' : value} onChangeText={onChange} placeholder="…or paste an image URL (https://…)" autoCapitalize="none" />

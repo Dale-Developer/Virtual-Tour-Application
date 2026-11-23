@@ -1,10 +1,10 @@
 import { supabase } from '../../lib/supabase'; 
+import { decode } from 'base64-arraybuffer'; 
 import { SEED_DESTINATIONS } from './seed';
 import { CATEGORIES, PROVINCES } from '../theme';
 
 export const PASSING_PERCENT = 60;
 
-/** The schema has no province column, so it is read from the end of the address. */
 export function provinceOf(address = '') {
   const parts = address.split(',').map((s) => s.trim().toLowerCase()).reverse();
   for (const part of parts) {
@@ -14,9 +14,6 @@ export function provinceOf(address = '') {
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Helper Mappers (Ensures your UI stays exactly the same)             */
-/* ------------------------------------------------------------------ */
 const mapDestination = (r) => {
   if (!r) return null;
   return {
@@ -52,14 +49,11 @@ const mapUser = (r) => {
 /* Setup & Seeding                                                     */
 /* ------------------------------------------------------------------ */
 export async function initDB() {
-  // Supabase handles tables in the cloud. We just need to check if seed data exists.
   const { count, error } = await supabase
     .from('destinations')
     .select('*', { count: 'exact', head: true });
     
   if (count === 0 && !error) {
-    // We need an admin ID to attach created_by. 
-    // For testing, we'll just insert without created_by if not logged in.
     const { data: { user } } = await supabase.auth.getUser();
     await seedDestinations(user ? user.id : null);
   }
@@ -88,7 +82,7 @@ export async function seedDestinations(createdBy) {
         await supabase.from('quiz_questions').insert([{
           destination_id: newDestId,
           question: question,
-          options: options, // Supabase handles JSON natively
+          options: options, 
           correct_answer: correct,
           explanation: explanation
         }]);
@@ -117,39 +111,9 @@ export async function getUserById(id) {
   return mapUser(data);
 }
 
-// export async function registerUser({ first_name, last_name, username, password }) {
-//   const cleanUsername = username.trim().toLowerCase();
-  
-//   // Check if username exists
-//   const { data: existing } = await supabase.from('profiles').select('username').eq('username', cleanUsername).single();
-//   if (existing) throw new Error('That username is taken. Please choose another one.');
-
-//   // Use a fake email for Supabase Auth
-//   const fakeEmail = `${cleanUsername}@example.com`;
-
-//   const { data: authData, error: authError } = await supabase.auth.signUp({
-//     email: fakeEmail,
-//     password: password,
-//   });
-
-//   if (authError) throw new Error(authError.message);
-
-//   // Insert into profiles table
-//   const { error: profileError } = await supabase.from('profiles').insert([{
-//     user_id: authData.user.id,
-//     first_name: first_name.trim(),
-//     last_name: last_name.trim(),
-//     username: cleanUsername,
-//     role: 'Tourist'
-//   }]);
-
-//   if (profileError) throw new Error(profileError.message);
-//   return getUserById(authData.user.id);
-// }
 export async function registerUser({ first_name, last_name, username, password }) {
   const cleanUsername = username.trim().toLowerCase();
   
-  // Check if username exists in profiles
   const { data: existing } = await supabase.from('profiles').select('username').eq('username', cleanUsername).single();
   if (existing) throw new Error('That username is taken. Please choose another one.');
 
@@ -162,12 +126,10 @@ export async function registerUser({ first_name, last_name, username, password }
 
   if (authError) throw new Error(authError.message);
 
-  // SAFETY CHECK: Did Supabase actually return the user?
   if (!authData.user) {
     throw new Error("Registration failed. The email/username might already be in use, or email confirmation is still enabled in Supabase.");
   }
 
-  // Insert into profiles table
   const { error: profileError } = await supabase.from('profiles').insert([{
     user_id: authData.user.id,
     first_name: first_name.trim(),
@@ -182,6 +144,7 @@ export async function registerUser({ first_name, last_name, username, password }
   
   return getUserById(authData.user.id);
 }
+
 export async function loginUser(username, password) {
   const fakeEmail = `${username.trim().toLowerCase()}@example.com`;
   
@@ -192,12 +155,10 @@ export async function loginUser(username, password) {
 
   if (error) throw new Error('Username or password is incorrect.');
   
-  // Fetch user profile
   const user = await getUserById(data.user.id);
   return user;
 }
 
-// Supabase AsyncStorage handles sessions automatically behind the scenes!
 export async function saveSession(userId) { /* Handled by Supabase */ }
 export async function clearSession() { await supabase.auth.signOut(); }
 
@@ -211,7 +172,8 @@ export async function loadSession() {
 /* Destinations                                                        */
 /* ------------------------------------------------------------------ */
 export async function listDestinations({ search = '', category = 'All', province = 'All' } = {}) {
-  let query = supabase.from('destinations').select('*');
+  // ADDED latitude and longitude back so the map works correctly!
+  let query = supabase.from('destinations').select('destination_id, destination_name, destination_address, category, image, latitude, longitude');
 
   if (search.trim()) {
     query = query.or(`destination_name.ilike.%${search}%,description.ilike.%${search}%,destination_address.ilike.%${search}%`);
@@ -260,7 +222,7 @@ export async function createDestination(d, createdBy) {
 }
 
 export async function updateDestination(id, d) {
-  await supabase.from('destinations').update({
+  const { error } = await supabase.from('destinations').update({
     destination_name: d.name.trim(),
     description: d.description.trim(),
     destination_address: d.address.trim(),
@@ -271,10 +233,31 @@ export async function updateDestination(id, d) {
     panorama_asset: d.panorama_asset || null,
     updated_at: new Date().toISOString()
   }).eq('destination_id', id);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteDestination(id) {
-  await supabase.from('destinations').delete().eq('destination_id', id);
+  // 1. Delete related user progress
+  const { error: progressError } = await supabase
+    .from('user_progress')
+    .delete()
+    .eq('destination_id', id);
+  if (progressError) throw new Error(progressError.message);
+
+  // 2. Delete related quiz questions
+  const { error: questionsError } = await supabase
+    .from('quiz_questions')
+    .delete()
+    .eq('destination_id', id);
+  if (questionsError) throw new Error(questionsError.message);
+
+  // 3. Delete the destination itself
+  const { error: destError } = await supabase
+    .from('destinations')
+    .delete()
+    .eq('destination_id', id);
+  if (destError) throw new Error(destError.message);
 }
 
 /* ------------------------------------------------------------------ */
@@ -291,7 +274,7 @@ export async function listQuestions(destinationId) {
     id: q.quiz_id,
     destination_id: q.destination_id,
     question: q.question,
-    options: q.options, // Already an array in Supabase JSONB
+    options: q.options, 
     answer_index: q.correct_answer,
     explanation: q.explanation
   }));
@@ -311,37 +294,35 @@ export async function getQuestion(id) {
 }
 
 export async function createQuestion({ destination_id, question, options, answer_index, explanation }) {
-  await supabase.from('quiz_questions').insert([{
+  const { error } = await supabase.from('quiz_questions').insert([{
     destination_id,
     question: question.trim(),
     options: options.map(o => o.trim()),
     correct_answer: answer_index,
     explanation: explanation?.trim() || null
   }]);
+  
+  if (error) throw new Error(error.message);
 }
 
 export async function updateQuestion(id, { question, options, answer_index, explanation }) {
-  await supabase.from('quiz_questions').update({
+  const { error } = await supabase.from('quiz_questions').update({
     question: question.trim(),
     options: options.map(o => o.trim()),
     correct_answer: answer_index,
     explanation: explanation?.trim() || null
   }).eq('quiz_id', id);
+
+  if (error) throw new Error(error.message);
 }
 
-// export async function deleteQuestion(id) {
-//   await supabase.from('quiz_questions').delete().eq('quiz_id', id);
-// }
 export async function deleteQuestion(id) {
   const { error } = await supabase
     .from('quiz_questions')
     .delete()
     .eq('quiz_id', id);
 
-  if (error) {
-    console.error("Supabase Delete Error:", error);
-    throw new Error(error.message);
-  }
+  if (error) throw new Error(error.message);
 }
 
 export async function listDestinationsWithQuestionCount() {
@@ -366,16 +347,17 @@ export async function listDestinationsWithQuestionCount() {
 /* Progress tracking                                                   */
 /* ------------------------------------------------------------------ */
 export async function saveQuizResult({ userId, destinationId, score, total }) {
-  await supabase.from('user_progress').insert([{
+  const { error } = await supabase.from('user_progress').insert([{
     user_id: userId,
     destination_id: destinationId,
     quiz_score: score,
     quiz_total: total
   }]);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function getProgress(userId) {
-  // Get all destinations and all user progress
   const { data: dests } = await supabase.from('destinations').select('*, quiz_questions(count)');
   const { data: progress } = await supabase.from('user_progress').select('*').eq('user_id', userId);
 
@@ -384,7 +366,6 @@ export async function getProgress(userId) {
   return dests.map(d => {
     const destProgress = progress?.filter(p => p.destination_id === d.destination_id) || [];
     
-    // Find best score
     let bestRatio = null;
     let bestScore = null;
     let bestTotal = null;
@@ -459,7 +440,6 @@ export async function getAdminStats() {
     const totalRatio = progress.reduce((acc, curr) => acc + (curr.quiz_score / curr.quiz_total), 0);
     avgPercent = Math.round((totalRatio / progress.length) * 100);
 
-    // Count completed
     const grouped = {};
     progress.forEach(p => {
       const key = `${p.user_id}-${p.destination_id}`;
@@ -506,13 +486,11 @@ export async function listTourists() {
   return users.map(u => {
     const userProgress = progress?.filter(p => p.user_id === u.user_id) || [];
     
-    // Calculate avg ratio
     let avgRatio = null;
     if (userProgress.length > 0) {
       avgRatio = userProgress.reduce((acc, p) => acc + (p.quiz_score / p.quiz_total), 0) / userProgress.length;
     }
 
-    // Calculate completed
     const grouped = {};
     userProgress.forEach(p => {
       const ratio = p.quiz_score / p.quiz_total;
@@ -533,9 +511,11 @@ export async function listTourists() {
 }
 
 export async function deleteUser(id) {
-  // Note: Deleting from auth requires admin privileges. 
-  // For a class project, deleting the profile is usually enough to hide them.
-  await supabase.from('profiles').delete().eq('user_id', id).eq('role', 'Tourist');
+  const { error: progressError } = await supabase.from('user_progress').delete().eq('user_id', id);
+  if (progressError) throw new Error(progressError.message);
+
+  const { error: profileError } = await supabase.from('profiles').delete().eq('user_id', id).eq('role', 'Tourist');
+  if (profileError) throw new Error(profileError.message);
 }
 
 /* ------------------------------------------------------------------ */
@@ -547,11 +527,13 @@ export async function updateProfile(userId, { first_name, last_name, username })
   const { data: clash } = await supabase.from('profiles').select('user_id').eq('username', cleanUsername).neq('user_id', userId).single();
   if (clash) throw new Error('That username is taken. Please choose another one.');
 
-  await supabase.from('profiles').update({
+  const { error } = await supabase.from('profiles').update({
     first_name: first_name.trim(),
     last_name: last_name.trim(),
     username: cleanUsername
   }).eq('user_id', userId);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function changePassword(userId, currentPassword, newPassword) {
@@ -560,7 +542,11 @@ export async function changePassword(userId, currentPassword, newPassword) {
 }
 
 export async function deleteAccount(userId) {
-  await supabase.from('profiles').delete().eq('user_id', userId);
+  await supabase.from('user_progress').delete().eq('user_id', userId);
+  
+  const { error } = await supabase.from('profiles').delete().eq('user_id', userId);
+  if (error) throw new Error(error.message);
+
   await supabase.auth.signOut();
 }
 
@@ -573,10 +559,36 @@ export async function getSetting(key) {
 }
 
 export async function setSetting(key, value) {
-  // Upsert means: Insert if it doesn't exist, Update if it does
-  await supabase.from('app_settings').upsert({ key: key, value: value });
+  const { error } = await supabase.from('app_settings').upsert({ key: key, value: value });
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteSetting(key) {
-  await supabase.from('app_settings').delete().eq('key', key);
+  const { error } = await supabase.from('app_settings').delete().eq('key', key);
+  if (error) throw new Error(error.message);
+}
+
+/* ------------------------------------------------------------------ */
+/* Storage Upload (Images)                                             */
+/* ------------------------------------------------------------------ */
+export async function uploadImageToStorage(base64, mimeType = 'image/jpeg') {
+  const fileExt = mimeType ? mimeType.split('/')[1] : 'jpeg';
+  const fileName = `${Date.now()}.${fileExt}`;
+  const filePath = `public/${fileName}`;
+  
+  const arrayBuffer = decode(base64);
+
+  const { error } = await supabase.storage
+    .from('destination-images')
+    .upload(filePath, arrayBuffer, {
+      contentType: mimeType,
+    });
+
+  if (error) throw new Error(error.message);
+
+  const { data: { publicUrl } } = supabase.storage
+    .from('destination-images')
+    .getPublicUrl(filePath);
+
+  return publicUrl;
 }
